@@ -162,7 +162,7 @@ struct WorkbenchView: View {
             HStack(spacing: 10) {
                 Image(nsImage: NSApplication.shared.applicationIconImage)
                     .resizable().frame(width: 30, height: 30).accessibilityHidden(true)
-                Text(language.text("GPU 工作台", "GPU Workbench")).font(.headline.weight(.bold)).foregroundStyle(.white)
+                Text(verbatim: GPUWorkbenchApp.displayName).font(.headline.weight(.bold)).foregroundStyle(.white)
             }.padding(.top, 26).padding(.horizontal, 19)
             HStack {
                 Text(language.text("服务器", "Servers")).font(.caption.weight(.semibold)).foregroundStyle(.white.opacity(0.63))

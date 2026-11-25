@@ -1,10 +1,10 @@
 <img src="Packaging/AppIcon.png" width="64" height="64" alt="">
 
-# GPU 工作台
+# GPU Workbench
 
 [English](README.md) · 简体中文
 
-GPU 工作台是一款 macOS 应用，通过 SSH 查看 Linux 服务器的 NVIDIA 显卡占用，并在内置终端中打开 tmux 工作环境。每个快捷方式保存会话名、Conda 环境和工作目录。
+GPU Workbench 是一款 macOS 应用，通过 SSH 查看 Linux 服务器的 NVIDIA 显卡占用，并在内置终端中打开 tmux 工作环境。每个快捷方式保存会话名、Conda 环境和工作目录。
 
 ## 构建与打开
 
@@ -12,7 +12,7 @@ Mac 需要 macOS 14 或以上、命令行开发工具，以及 Swift 6.1 或兼�
 
 ```sh
 bash Packaging/build-app.sh
-open "dist/GPU 工作台.app"
+open "dist/GPU Workbench.app"
 ```
 
 脚本会为当前 Mac 架构构建应用并完成本地签名。在侧边栏底部的地球图标下选择 **简体中文** 或 **English**。添加第一台服务器前、打开终端后都可以切换。首次使用时默认为中文，选择会保存在这台 Mac 上。系统提供的控件沿用 macOS 的语言，终端内的输出沿用远程程序的语言。

@@ -15,12 +15,13 @@ extension EnvironmentValues {
 
 @main
 struct GPUWorkbenchApp: App {
+    static let displayName = "GPU Workbench"
     @NSApplicationDelegateAdaptor(WorkbenchAppDelegate.self) private var delegate
     @StateObject private var store = WorkbenchStore()
     @AppStorage(WorkbenchLanguage.preferenceKey) private var language = WorkbenchLanguage.chinese
 
     var body: some Scene {
-        Window(Text(verbatim: language.text("GPU 工作台", "GPU Workbench")), id: "workbench") {
+        Window(Text(verbatim: Self.displayName), id: "workbench") {
             WorkbenchView(store: store)
                 .environment(\.workbenchLanguage, language)
                 .environment(\.locale, Locale(identifier: language.rawValue))

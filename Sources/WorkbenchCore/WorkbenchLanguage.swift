@@ -78,7 +78,7 @@ public enum WorkbenchLanguage: String, CaseIterable, Sendable {
         "无法识别 rsync 的逐文件预演输出，已停止同步。": "The rsync file list could not be read. Sync stopped.",
         "预演包含无法确认的文件类型或操作，已停止同步。": "The preview contains an unknown file type or operation. Sync stopped.",
         "预演清单包含无法安全确认的路径，请检查本地文件后重新预演。": "The preview contains a path that could not be verified. Check the local files and preview again.",
-        "请选择本地项目目录。GPU 工作台源码目录和应用包不能作为同步来源。": "Choose a local project folder outside the GPU Workbench source tree and app bundle.",
+        "请选择本地项目目录。GPU Workbench 源码目录和应用包不能作为同步来源。": "Choose a local project folder outside the GPU Workbench source tree and app bundle.",
         "同步目标须为该服务器快捷方式中的项目绝对路径，路径可使用英文字母、数字、点、下划线和连字符。": "Use the absolute project path from this server's shortcut. Path components can contain ASCII letters, digits, dots, underscores, and hyphens.",
         "上传前需要确认文件清单。": "Review and confirm the file list before uploading.",
 

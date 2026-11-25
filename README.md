@@ -1,10 +1,10 @@
 <img src="Packaging/AppIcon.png" width="64" height="64" alt="">
 
-# Remote Monitor
+# GPU Workbench
 
 English · [简体中文](README.zh-CN.md)
 
-Remote Monitor is a macOS app for checking NVIDIA GPU usage on a Linux server and opening a ready-to-use tmux workspace over SSH. A saved shortcut combines a session name, a Conda environment, and a working directory.
+GPU Workbench is a macOS app for checking NVIDIA GPU usage on a Linux server and opening a ready-to-use tmux workspace over SSH. A saved shortcut combines a session name, a Conda environment, and a working directory.
 
 ## Build and open
 
@@ -12,7 +12,7 @@ On a Mac with macOS 14 or later, install the Command Line Tools and Swift 6.1 or
 
 ```sh
 bash Packaging/build-app.sh
-open "dist/GPU 工作台.app"
+open "dist/GPU Workbench.app"
 ```
 
 The script builds for the current Mac and signs the app locally. At the bottom of the sidebar, select **English** or **简体中文** under the globe icon. You can switch before adding your first server or while a terminal is open. The app starts in Chinese and remembers your choice on this Mac. System-provided controls use the macOS language. Terminal output uses the remote program’s language.

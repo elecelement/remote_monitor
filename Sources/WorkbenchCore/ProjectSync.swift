@@ -115,7 +115,7 @@ public enum ProjectSync {
         guard source.isFileURL, local.path != "/",
               (try? local.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true,
               !insideWorkbench(local, cache: &workbenchDirectories) else {
-            throw TransportError("请选择本地项目目录。GPU 工作台源码目录和应用包不能作为同步来源。")
+            throw TransportError("请选择本地项目目录。GPU Workbench 源码目录和应用包不能作为同步来源。")
         }
         let remote = shortcut.directory
         let parts = remote.split(separator: "/")
