@@ -2,14 +2,28 @@ import AppKit
 import SwiftUI
 import WorkbenchCore
 
+private struct WorkbenchLanguageKey: EnvironmentKey {
+    static let defaultValue: WorkbenchLanguage = .chinese
+}
+
+extension EnvironmentValues {
+    var workbenchLanguage: WorkbenchLanguage {
+        get { self[WorkbenchLanguageKey.self] }
+        set { self[WorkbenchLanguageKey.self] = newValue }
+    }
+}
+
 @main
 struct GPUWorkbenchApp: App {
     @NSApplicationDelegateAdaptor(WorkbenchAppDelegate.self) private var delegate
     @StateObject private var store = WorkbenchStore()
+    @AppStorage(WorkbenchLanguage.preferenceKey) private var language = WorkbenchLanguage.chinese
 
     var body: some Scene {
-        Window("GPU 工作台", id: "workbench") {
+        Window(Text(verbatim: language.text("GPU 工作台", "GPU Workbench")), id: "workbench") {
             WorkbenchView(store: store)
+                .environment(\.workbenchLanguage, language)
+                .environment(\.locale, Locale(identifier: language.rawValue))
                 .frame(minWidth: 860, minHeight: 570)
                 .tint(WorkbenchStyle.accent)
         }

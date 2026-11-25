@@ -10,6 +10,7 @@ import shlex
 import subprocess
 import sys
 import time
+from typing import NamedTuple
 
 
 TMUX_PATHS = ("/usr/bin/tmux", "/bin/tmux", "/usr/local/bin/tmux")
@@ -20,6 +21,17 @@ SYSTEM_PATH = "/usr/bin:/bin:/usr/sbin:/sbin"
 
 class Problem(Exception):
     pass
+
+
+class SessionProblem(Problem):
+    def __init__(self, code, message, token=None):
+        super().__init__(message)
+        self.code = code
+        self.token = token
+
+
+def missing_session():
+    return SessionProblem("missing", "未找到原会话。它可能已结束、改名或被同名会话替代。")
 
 
 def executable(paths, label):
@@ -54,16 +66,16 @@ def parse_metrics(output):
     for row in csv.reader(output.splitlines(), skipinitialspace=True):
         if not row:
             continue
-        if len(row) != 5 or not row[0].strip().isdigit():
+        if len(row) != 6 or not row[0].strip().isdigit():
             raise Problem("驱动返回了无法识别的 GPU 数据。")
         records.append(dict(index=int(row[0]), name=row[1].strip(), utilization=number(row[2]),
-                            memoryUsed=number(row[3]), memoryTotal=number(row[4])))
+                            memoryUsed=number(row[3]), memoryTotal=number(row[4]), memoryFree=number(row[5])))
     return records
 
 
 def query_gpu():
     proc = run([executable(GPU_PATHS, "nvidia-smi"),
-                "--query-gpu=index,name,utilization.gpu,memory.used,memory.total",
+                "--query-gpu=index,name,utilization.gpu,memory.used,memory.total,memory.free",
                 "--format=csv,noheader,nounits"], clean_env())
     if proc.returncode:
         raise Problem("无法读取 NVIDIA 驱动数据。")
@@ -86,7 +98,7 @@ def checked_spec(request):
                 or any(ord(c) < 32 or ord(c) == 127 for c in value)):
             raise Problem("请使用远程绝对路径。")
     return {key: request.get(key, "") for key in
-            ("socketID", "sessionID", "name", "environment", "directory", "conda", "requireReady")}
+            ("socketID", "sessionID", "name", "environment", "directory", "conda", "requireReady", "language")}
 
 
 def conda_paths(spec):
@@ -207,7 +219,8 @@ state = env.pop("GWB_STATE")
 init = env.pop("GWB_CONDA_INIT", "")
 prefix = env.pop("GWB_EXPECTED_PREFIX", "")
 if state == "ready" and env.get("CONDA_PREFIX") != prefix:
-    sys.exit("Conda prefix mismatch")
+    sys.exit("The Conda prefix differs from the expected path." if sys.argv[2] == "en"
+             else "Conda 环境路径与预期路径不一致。")
 env["PS1"] = ("(" + name + ") " if state == "ready" else "") + r"\\u@\\h:\\w\\$ "
 if init:
     env["GWB_CONDA_INIT"] = init
@@ -216,69 +229,108 @@ os.execve("/bin/bash", ["/bin/bash", "--noprofile", "--norc", "-i"], env)
 '''
 
 
+INSTANCE_FORMAT = "#{pid}:#{session_id}:#{session_created}"
+INSTANCE_PATTERN = r"[0-9]+:\$[0-9]+:[0-9]+"
+
+
+class SessionInfo(NamedTuple):
+    token: str
+    identity: str
+    state: str
+
+    @property
+    def target(self):
+        return self.token.split(":")[1]
+
+
 def session_info(tmux, spec):
-    # List exact names and IDs without starting a tmux server.
     proc = run([tmux, "-N", "-u", "list-sessions", "-F",
-                "#{session_name}|#{session_id}|#{@gwb_identity}|#{@gwb_state}"], clean_env())
+                INSTANCE_FORMAT + "|#{@gwb_identity}|#{@gwb_state}|#{session_name}"], clean_env())
+    if proc.returncode:
+        if "no server running on " in proc.stderr or "No such file or directory" in proc.stderr:
+            return None
+        raise Problem("无法读取 tmux 会话列表。" + proc.stderr.strip()[:180])
     for line in proc.stdout.splitlines():
         fields = line.split("|", 3)
-        if len(fields) == 4 and fields[0] == spec["name"] and re.fullmatch(r"\$[0-9]+", fields[1]):
-            return fields[1:]
+        if len(fields) == 4 and fields[3] == spec["name"]:
+            if not re.fullmatch(INSTANCE_PATTERN, fields[0]):
+                raise Problem("无法确认 tmux 会话标识。")
+            return SessionInfo(*fields[:3])
     return None
 
 
-def start_session(tmux, spec):
+def start_session(tmux, spec, mode):
     if not os.path.isdir(spec["directory"]) or not os.access(spec["directory"], os.X_OK):
         raise Problem("工作目录不存在或没有进入权限。")
     env, detail = environment_for_shell(spec)
     if spec.get("requireReady") == "yes" and env["GWB_STATE"] != "ready":
         raise Problem(detail)
-    pane = [sys.executable, "-I", "-B", "-S", "-c", PANE, json.dumps(env, ensure_ascii=True)]
+    pane = [sys.executable, "-I", "-B", "-S", "-c", PANE, json.dumps(env, ensure_ascii=True),
+            "en" if spec.get("language") == "en" else "zh-Hans"]
     target = "=" + spec["name"] + ":"
     # The first split inserts a full-width pane above the original, then selects it.
     # Splitting that active top pane horizontally leaves the original pane across the bottom.
-    proc = run([tmux, "-u", "-f", "/dev/null", "new-session", "-d", "-E", "-s", spec["name"], *pane,
+    proc = run([tmux, "-u", "-f", "/dev/null", "new-session", "-d", "-E", "-P", "-F", INSTANCE_FORMAT,
+                "-s", spec["name"], *pane,
                 ";", "split-window", "-v", "-b", "-t", target, *pane,
                 ";", "split-window", "-h", "-t", target, *pane,
                 ";", "set-option", "-t", target, "@gwb_identity", spec["sessionID"],
                 ";", "set-option", "-t", target, "@gwb_state", env["GWB_STATE"]], clean_env())
     if proc.returncode:
-        info = session_info(tmux, spec)
-        if not info or info[1:] != [spec["sessionID"], env["GWB_STATE"]]:
-            raise Problem("无法完成三窗格启动。现有会话将保留，请在终端检查。 " + proc.stderr.strip()[:180])
+        if "duplicate session:" in proc.stderr:
+            existing = session_info(tmux, spec)
+            if existing:
+                return resume_session(tmux, existing, spec, {"mode": mode})
+        raise Problem("无法完成三窗格启动。现有会话将保留，请在终端检查。 " + proc.stderr.strip()[:180])
+    token = proc.stdout.strip()
+    if not re.fullmatch(INSTANCE_PATTERN, token):
+        raise Problem("无法确认新建会话的标识。")
     limit = time.monotonic() + 4
     while time.monotonic() < limit:
-        panes = run([tmux, "-N", "-u", "list-panes", "-t", target, "-F",
+        panes = run([tmux, "-N", "-u", "list-panes", "-t", token.split(":")[1] + ":", "-F",
                      "#{pane_current_command}\t#{pane_current_path}"], clean_env())
         expected = "bash\t" + env["GWB_EXPECTED_DIR"]
         if not panes.returncode and panes.stdout.splitlines() == [expected] * 3:
-            return env["GWB_STATE"], detail
+            return dict(origin="created", sessionToken=token, state=env["GWB_STATE"], detail=detail)
         time.sleep(0.05)
     raise Problem("未能确认三个终端都进入了指定目录。会话已保留，请检查 tmux。")
+
+
+def resume_session(tmux, info, spec, request):
+    mode = request["mode"]
+    if mode == "create":
+        raise SessionProblem("collision", "该名称已被会话使用。请选用其他名称，或核实后接回。", info.token)
+    if mode != "ensure" and request.get("sessionToken") != info.token:
+        raise missing_session()
+    managed = info.identity == spec["sessionID"] and info.state in ("ready", "manual")
+    if not managed and mode not in ("confirm", "attachConfirmed"):
+        raise SessionProblem("collision", "发现同名会话，无法确认它由此快捷方式创建。", info.token)
+    if mode in ("attach", "attachConfirmed"):
+        # Check the server PID and creation time on the very connection that attaches.
+        # A restarted tmux server may reuse even the exact numeric session ID.
+        condition = "#{==:" + INSTANCE_FORMAT + "," + info.token + "}"
+        attach = "attach-session -E -t " + shlex.quote(info.target)
+        missing = ("The verified session is gone. Reconnect to check again."
+                   if request.get("language") == "en" else "未找到刚才确认的会话，请重新连接。")
+        os.execve(tmux, [tmux, "-N", "-u", "if-shell", "-F", "-t", info.target, condition, attach,
+                         "display-message -p " + shlex.quote(missing)], clean_env())
+    return dict(origin="resumed", sessionToken=info.token, state=info.state if managed else "ready",
+                detail="已找到已有会话，接回时保留当前布局、环境和任务。")
 
 
 def session(request):
     spec = checked_spec(request)
     tmux = executable(TMUX_PATHS, "tmux")
     info = session_info(tmux, spec)
-    attach = request["mode"] == "attach"
     if info is None:
-        if attach:
-            raise Problem("该会话已结束，请从快捷方式重新启动。")
-        state, detail = start_session(tmux, spec)
-        return {"state": state, "detail": detail}
-
-    target, identity, state = info
-    if identity != spec["sessionID"] or state not in ("ready", "manual"):
-        if request.get("allowExisting") != "yes":
-            raise Problem("发现同名会话。如已确认是你的会话，可在快捷方式中允许接回。")
-        state = "ready"
-    if attach:
-        os.execve(tmux, [tmux, "-N", "-u", "attach-session", "-E", "-t", target], clean_env())
-    return {"state": state, "detail": "已找到已有会话，接回时保留当前布局、环境和任务。"}
+        if request["mode"] not in ("ensure", "create"):
+            raise missing_session()
+        return start_session(tmux, spec, request["mode"])
+    return resume_session(tmux, info, spec, request)
 
 
 def main():
+    request = {}
     try:
         os.umask(0o077)
         os.chdir("/")
@@ -292,15 +344,35 @@ def main():
             return 0
         if request["mode"] == "gpu":
             data = query_gpu()
-        elif request["mode"] in ("ensure", "attach"):
+        elif request["mode"] in ("ensure", "create", "reconnect", "confirm", "attach", "attachConfirmed"):
             data = session(request)
         else:
             raise Problem("不支持此操作。")
         publish(dict(ok=True, **data))
         return 0
     except (Problem, OSError, ValueError, KeyError, IndexError, TypeError, subprocess.SubprocessError) as err:
-        publish({"ok": False, "error": str(err)})
+        report_error(request, err)
         return 1
+
+
+def report_error(request, err):
+    if (isinstance(request, dict) and request.get("mode") in ("attach", "attachConfirmed")
+            and sys.stdout.isatty()):
+        # Once the SSH client owns the PTY the app no longer decodes JSON.
+        # Reconnect rechecks the cause and presents full recovery actions locally.
+        message = str(err)
+        if request.get("language") == "en" and isinstance(err, Problem):
+            if isinstance(err, SessionProblem):
+                message = ("The original session is no longer available." if err.code == "missing"
+                           else "A different session uses this name. Verify it before attaching.")
+            else:
+                message = "Could not attach to the tmux session. Use Reconnect to check the server."
+        print(message, file=sys.stderr, flush=True)
+    else:
+        result = {"ok": False, "error": str(err)}
+        if isinstance(err, SessionProblem):
+            result.update(code=err.code, sessionToken=err.token)
+        publish(result)
 
 
 def publish(record):

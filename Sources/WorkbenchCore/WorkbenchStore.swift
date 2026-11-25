@@ -2,7 +2,7 @@ import Combine
 import Darwin
 import Foundation
 
-public struct ServerProfile: Codable, Identifiable, Hashable {
+public struct ServerProfile: Codable, Identifiable, Hashable, Sendable {
     public let id: UUID
     public var label: String
     public var host: String
@@ -25,26 +25,25 @@ public struct ServerProfile: Codable, Identifiable, Hashable {
     }
 }
 
-public struct Shortcut: Codable, Identifiable, Hashable {
+public struct Shortcut: Codable, Identifiable, Hashable, Sendable {
     public let id: UUID
     public var serverID: UUID
     public var title: String
     public var name: String
     public var environment: String
     public var directory: String
-    public var allowExisting: Bool?
+    public fileprivate(set) var syncSource: String?
     public private(set) var socketID: String
     public private(set) var sessionID: String
 
     public init(id: UUID = UUID(), serverID: UUID, title: String, name: String,
-                environment: String, directory: String, allowExisting: Bool = false) {
+                environment: String, directory: String) {
         self.id = id
         self.serverID = serverID
         self.title = title
         self.name = name
         self.environment = environment
         self.directory = directory
-        self.allowExisting = allowExisting
         self.socketID = Self.token()
         self.sessionID = Self.token()
     }
@@ -138,6 +137,7 @@ public final class WorkbenchStore: ObservableObject {
             var value = shortcut
             if let index = library.shortcuts.firstIndex(where: { $0.id == value.id }) {
                 let old = library.shortcuts[index]
+                value.syncSource = old.syncSource
                 if old.serverID == value.serverID, old.name == value.name,
                    old.environment == value.environment, old.directory == value.directory {
                     value.keepSession(of: old)
@@ -153,6 +153,17 @@ public final class WorkbenchStore: ObservableObject {
 
     public func removeShortcut(_ id: UUID) throws {
         try update { $0.shortcuts.removeAll { $0.id == id } }
+    }
+
+    public func setSyncSource(_ folder: URL, for id: UUID) throws {
+        let path = folder.resolvingSymlinksInPath().path
+        guard Self.path(path) else { throw LibraryError("请选择本地项目目录。") }
+        try update { library in
+            guard let index = library.shortcuts.firstIndex(where: { $0.id == id }) else {
+                throw LibraryError("找不到用于同步的快捷方式。")
+            }
+            library.shortcuts[index].syncSource = path
+        }
     }
 
     private static func text(_ value: String) -> Bool {

@@ -12,6 +12,10 @@ res="$app/Contents/Resources"
 mkdir -p "$app/Contents/MacOS" "$res" "$stage/AppIcon.iconset"
 install -m 755 "$bin_dir/GPUWorkbench" "$app/Contents/MacOS/GPUWorkbench"
 install -m 644 Packaging/Info.plist "$app/Contents/Info.plist"
+for locale in en zh-Hans; do
+    mkdir -p "$res/$locale.lproj"
+    install -m 644 "Packaging/$locale.lproj/InfoPlist.strings" "$res/$locale.lproj/"
+done
 install -m 644 "$bin_dir/GPUWorkbench_WorkbenchCore.bundle/remote.py" "$res/remote.py"
 install -m 644 .build/checkouts/SwiftTerm/LICENSE "$res/SwiftTerm-LICENSE.txt"
 ditto "$bin_dir/SwiftTerm_SwiftTerm.bundle" "$res/SwiftTerm_SwiftTerm.bundle"

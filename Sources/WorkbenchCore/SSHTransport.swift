@@ -42,11 +42,31 @@ public struct GPUReading: Codable, Identifiable, Hashable, Sendable {
     public let utilization: Double?
     public let memoryUsed: Double?
     public let memoryTotal: Double?
+    public let memoryFree: Double?
 }
 
-public struct LaunchResult: Codable, Hashable, Sendable {
+public enum SessionOrigin: String, Decodable, Sendable {
+    case created, resumed
+}
+
+public enum SessionIssue: LocalizedError, Sendable {
+    case missing
+    case collision(String)
+
+    public var errorDescription: String? {
+        switch self {
+        case .missing: return "未找到原会话。它可能已结束、改名或被同名会话替代。"
+        case .collision: return "该名称已被会话使用。请选用其他名称，或核实后接回。"
+        }
+    }
+}
+
+public struct LaunchResult: Hashable, Sendable {
     public let state: String
     public let detail: String
+    public let origin: SessionOrigin
+    public let sessionToken: String
+    fileprivate let confirmedExisting: Bool
 }
 
 public struct TransportError: LocalizedError, Sendable {
@@ -117,14 +137,40 @@ public enum SSHTransport {
     }
 
     public static func ensure(_ profile: ServerProfile, _ shortcut: Shortcut) async throws -> LaunchResult {
-        let response = try await request(profile, shortcut: shortcut, mode: "ensure", timeout: 65)
-        guard let state = response.state, ["ready", "manual"].contains(state),
-              let detail = response.detail else { throw invalidResponse }
-        return LaunchResult(state: state, detail: detail)
+        try await prepare(profile, shortcut, mode: "ensure")
     }
 
-    public static func attachArguments(_ profile: ServerProfile, _ shortcut: Shortcut) throws -> [String] {
-        try arguments(profile, shortcut: shortcut, mode: "attach")
+    public static func create(_ profile: ServerProfile, _ shortcut: Shortcut) async throws -> LaunchResult {
+        try await prepare(profile, shortcut, mode: "create")
+    }
+
+    public static func reconnect(_ profile: ServerProfile, _ shortcut: Shortcut,
+                                 sessionToken: String) async throws -> LaunchResult {
+        try await prepare(profile, shortcut, mode: "reconnect", sessionToken: sessionToken)
+    }
+
+    public static func confirmExisting(_ profile: ServerProfile, _ shortcut: Shortcut,
+                                       sessionToken: String) async throws -> LaunchResult {
+        try await prepare(profile, shortcut, mode: "confirm", sessionToken: sessionToken)
+    }
+
+    private static func prepare(_ profile: ServerProfile, _ shortcut: Shortcut, mode: String,
+                                sessionToken: String? = nil) async throws -> LaunchResult {
+        let response = try await request(profile, shortcut: shortcut, mode: mode,
+                                         timeout: 65, sessionToken: sessionToken)
+        guard let state = response.state, ["ready", "manual"].contains(state),
+              let detail = response.detail, let token = response.sessionToken,
+              let origin = response.origin, mode != "create" || origin == .created,
+              sessionToken == nil || (sessionToken == token && origin == .resumed)
+        else { throw invalidResponse }
+        return LaunchResult(state: state, detail: clean(detail), origin: origin, sessionToken: token,
+                            confirmedExisting: mode == "confirm")
+    }
+
+    public static func attachArguments(_ profile: ServerProfile, _ shortcut: Shortcut,
+                                       result: LaunchResult) throws -> [String] {
+        try arguments(profile, shortcut: shortcut, mode: result.confirmedExisting ? "attachConfirmed" : "attach",
+                      sessionToken: result.sessionToken)
     }
 
     /// Run in a local PTY so the system tool talks directly to the user and agent.
@@ -138,6 +184,9 @@ public enum SSHTransport {
         let gpus: [GPUReading]?
         let state: String?
         let detail: String?
+        let origin: SessionOrigin?
+        let sessionToken: String?
+        let code: String?
     }
 
     private static var invalidResponse: TransportError {
@@ -145,8 +194,8 @@ public enum SSHTransport {
     }
 
     private static func request(_ profile: ServerProfile, shortcut: Shortcut?, mode: String,
-                                timeout: TimeInterval) async throws -> Response {
-        let arguments = try arguments(profile, shortcut: shortcut, mode: mode)
+                                timeout: TimeInterval, sessionToken: String? = nil) async throws -> Response {
+        let arguments = try arguments(profile, shortcut: shortcut, mode: mode, sessionToken: sessionToken)
         let result = try await LocalProcess.run("/usr/bin/ssh", arguments, timeout: timeout)
         if result.status == 255 { throw sshError(result.errors) }
         guard let response = try? JSONDecoder().decode(Response.self, from: result.output) else {
@@ -154,6 +203,10 @@ public enum SSHTransport {
             throw invalidResponse
         }
         guard response.ok, result.status == 0 else {
+            if shortcut != nil, response.code == "missing" { throw SessionIssue.missing }
+            if shortcut != nil, response.code == "collision", let token = response.sessionToken {
+                throw SessionIssue.collision(token)
+            }
             throw TransportError(clean(response.error ?? "远程操作未能完成。"), reachedServer: true)
         }
         return response
@@ -189,7 +242,40 @@ public enum SSHTransport {
     }
 
     static func arguments(_ profile: ServerProfile, shortcut: Shortcut?, mode: String,
-                          pinDirectory: URL? = nil) throws -> [String] {
+                          sessionToken: String? = nil, pinDirectory: URL? = nil,
+                          language: WorkbenchLanguage = .preferred) throws -> [String] {
+        let interactive = mode == "attach" || mode == "attachConfirmed"
+        var args = try connectionArguments(profile, interactive: interactive, pinDirectory: pinDirectory)
+        args += ["--", try endpoint(profile)]
+        var payload = ["mode": mode]
+        switch mode {
+        case "gpu", "watchGPU":
+            guard shortcut == nil else { throw invalidResponse }
+        case "ensure", "create", "attach", "attachConfirmed", "confirm", "reconnect":
+            guard let shortcut, shortcut.serverID == profile.id else {
+                throw TransportError("快捷方式与当前服务器不匹配。")
+            }
+            payload["language"] = language.rawValue
+            if mode != "ensure" && mode != "create" {
+                guard let sessionToken, !sessionToken.isEmpty else { throw invalidResponse }
+                payload["sessionToken"] = sessionToken
+            }
+            payload.merge(["socketID": shortcut.socketID, "sessionID": shortcut.sessionID,
+                "name": shortcut.name, "environment": shortcut.environment, "directory": shortcut.directory,
+                "conda": profile.conda]) { _, new in new }
+        default:
+            throw TransportError("不支持的自动操作。")
+        }
+        let data = try JSONEncoder().encode(payload)
+        guard data.count <= 16_384 else { throw TransportError("快捷方式内容超过大小限制。") }
+        let encoded = data.base64EncodedString().replacingOccurrences(of: "+", with: "-")
+            .replacingOccurrences(of: "/", with: "_")
+        args.append("exec /usr/bin/python3 -I -B -S -c " + (try remoteSource.get()) + " '" + encoded + "'")
+        return args
+    }
+
+    static func connectionArguments(_ profile: ServerProfile, interactive: Bool = false,
+                                    pinDirectory: URL? = nil) throws -> [String] {
         let host = try endpoint(profile)
         let username = profile.username
         guard !username.isEmpty, username.utf8.count <= 128, !username.hasPrefix("-"),
@@ -201,21 +287,6 @@ public enum SSHTransport {
             throw TransportError("请先核对此主机和端口的服务器指纹。")
         }
         let keyPath = try identityPath(profile)
-        var payload = ["mode": mode]
-        switch mode {
-        case "gpu", "watchGPU":
-            guard shortcut == nil else { throw invalidResponse }
-        case "ensure", "attach":
-            guard let shortcut, shortcut.serverID == profile.id else {
-                throw TransportError("快捷方式与当前服务器不匹配。")
-            }
-            payload.merge(["socketID": shortcut.socketID, "sessionID": shortcut.sessionID,
-                "name": shortcut.name, "environment": shortcut.environment, "directory": shortcut.directory,
-                "conda": profile.conda, "allowExisting": shortcut.allowExisting == true ? "yes" : "no"]) { _, new in new }
-        default:
-            throw TransportError("不支持的自动操作。")
-        }
-
         let directory = try pinDirectory ?? FileManager.default.url(for: .applicationSupportDirectory,
             in: .userDomainMask, appropriateFor: nil, create: true)
             .appendingPathComponent("GPUWorkbench/HostKeys", isDirectory: true)
@@ -233,14 +304,9 @@ public enum SSHTransport {
             "ClearAllForwardings=yes", "PermitLocalCommand=no", "EscapeChar=none",
             "ControlMaster=no", "ControlPath=none", "ConnectTimeout=8", "ConnectionAttempts=1",
             "ServerAliveInterval=15", "ServerAliveCountMax=2", "LogLevel=ERROR"]
-        var args = ["-F", "/dev/null", mode == "attach" ? "-tt" : "-T"]
+        var args = ["-F", "/dev/null", interactive ? "-tt" : "-T"]
         for option in options { args += ["-o", option] }
-        args += ["-p", String(profile.port), "-l", username, "-i", keyPath, "--", host]
-        let data = try JSONEncoder().encode(payload)
-        guard data.count <= 16_384 else { throw TransportError("快捷方式内容超过大小限制。") }
-        let encoded = data.base64EncodedString().replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_")
-        args.append("exec /usr/bin/python3 -I -B -S -c " + (try remoteSource.get()) + " '" + encoded + "'")
+        args += ["-p", String(profile.port), "-l", username, "-i", keyPath]
         return args
     }
 
@@ -304,14 +370,14 @@ public enum SSHTransport {
     }
 }
 
-private struct ProcessOutput: Sendable {
+struct ProcessOutput: Sendable {
     let output: Data
     let errors: Data
     let status: Int32
 }
 
-/// Runs only the local SSH client or host-key scanner. Both output streams are drained concurrently.
-private final class LocalProcess: @unchecked Sendable {
+/// Runs a fixed system tool and drains both output streams concurrently.
+final class LocalProcess: @unchecked Sendable {
     private let process = Process()
     private let lock = NSLock()
     private var stopped: Error?

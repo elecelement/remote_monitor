@@ -75,6 +75,18 @@ struct TerminalFocusTests {
         }
     }
 
+    @Test func sshTextDoesNotAnnounceResumeBeforeTmuxDraws() {
+        _ = NSApplication.shared
+        let view = WorkbenchTerminalView(frame: NSRect(x: 0, y: 0, width: 640, height: 390))
+        var attachments = 0
+        view.onTmuxScreen = { attachments += 1 }
+        view.dataReceived(slice: Array("ssh: connection closed\r\n".utf8)[...])
+        #expect(attachments == 0)
+        view.dataReceived(slice: Array("\u{1b}[?1049h".utf8)[...])
+        view.dataReceived(slice: Array("shell prompt".utf8)[...])
+        #expect(attachments == 1)
+    }
+
     private func drainFocusRequest() async {
         await withCheckedContinuation { continuation in
             DispatchQueue.main.async { continuation.resume() }

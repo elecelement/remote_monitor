@@ -26,15 +26,29 @@ private final class TerminalHostDelegate: @preconcurrency TerminalViewDelegate {
     func bell(source: TerminalView) {}
 }
 
+enum TerminalLaunchStatus {
+    case ready, needsActivation, attaching, attached
+
+    func text(in language: WorkbenchLanguage) -> String {
+        switch self {
+        case .ready: return language.text("已新建 · 三个窗格已就绪", "Created · Three panes ready")
+        case .needsActivation: return language.text("已新建 · 三个窗格已打开", "Created · Three panes open")
+        case .attaching: return language.text("已找到原会话 · 正在接回", "Session found · Attaching")
+        case .attached: return language.text("已接回 · 沿用原有窗格", "Attached · Existing panes preserved")
+        }
+    }
+}
+
 @MainActor
 final class TerminalTab: NSObject, ObservableObject, Identifiable, LocalProcessTerminalViewDelegate {
     let id: UUID
     let serverID: UUID
-    let title: String
-    let subtitle: String
-    let isUnlock: Bool
-    let detail: String
-    let isManual: Bool
+    private let sessionName: String?
+    private let endpoint: String
+    private let launch: LaunchResult?
+    var isUnlock: Bool { sessionName == nil }
+    var sessionToken: String? { launch?.sessionToken }
+    @Published private(set) var launchStatus: TerminalLaunchStatus?
     let terminal: WorkbenchTerminalView
     private let hostDelegate = TerminalHostDelegate()
     @Published private(set) var ended = false
@@ -44,16 +58,21 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, LocalProcessT
     init(id: UUID, profile: ServerProfile, shortcut: Shortcut?, result: LaunchResult?) throws {
         self.id = id
         serverID = profile.id
-        isUnlock = shortcut == nil
-        title = shortcut?.name ?? "本地密钥解锁"
-        subtitle = shortcut == nil ? "本机 · 系统 SSH 代理" : "\(profile.username)@\(profile.host) · 手动终端"
-        isManual = result?.state == "manual"
-        detail = result?.detail ?? ""
+        sessionName = shortcut?.name
+        endpoint = "\(profile.username)@\(profile.host)"
+        launch = result
+        switch result?.origin {
+        case .created:
+            launchStatus = result?.state == "manual" ? .needsActivation : .ready
+        case .resumed: launchStatus = .attaching
+        case nil: launchStatus = nil
+        }
         terminal = WorkbenchTerminalView(frame: CGRect(x: 0, y: 0, width: 780, height: 430))
         let arguments: [String]
         let executable: String
         if let shortcut {
-            arguments = try SSHTransport.attachArguments(profile, shortcut)
+            guard let result else { throw CocoaError(.coderValueNotFound) }
+            arguments = try SSHTransport.attachArguments(profile, shortcut, result: result)
             executable = "/usr/bin/ssh"
         } else {
             arguments = try SSHTransport.unlockArguments(profile)
@@ -62,6 +81,9 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, LocalProcessT
         super.init()
         terminal.processDelegate = self
         terminal.terminalDelegate = hostDelegate
+        if result?.origin == .resumed {
+            terminal.onTmuxScreen = { [weak self] in self?.launchStatus = .attached }
+        }
         terminal.font = NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)
         var environment = ["TERM=xterm-256color", "LANG=en_US.UTF-8", "PATH=/usr/bin:/bin:/usr/sbin:/sbin"]
         for key in ["HOME", "USER", "LOGNAME", "SSH_AUTH_SOCK", "TMPDIR"] {
@@ -90,6 +112,27 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, LocalProcessT
         }
     }
 
+    func title(in language: WorkbenchLanguage) -> String {
+        sessionName ?? language.text("本地密钥解锁", "Unlock Key")
+    }
+
+    func subtitle(in language: WorkbenchLanguage) -> String {
+        isUnlock ? language.text("本机 · 系统 SSH 代理", "Local · System SSH agent") : endpoint + " · tmux"
+    }
+
+    func activationNotice(in language: WorkbenchLanguage) -> String? {
+        guard let launch, launch.state == "manual" else { return nil }
+        if launch.origin == .created {
+            return language.text("待手动激活 · ", "Manual activation required · ") + language.diagnostic(launch.detail)
+        }
+        return language.text("此会话创建时需要手动激活 Conda。接回后请以各窗格的当前环境为准。",
+                             "This session needed manual Conda activation when it was created. Check the current environment in each pane.")
+    }
+
+    func dismissStatus(_ message: TerminalLaunchStatus) {
+        if launchStatus == message { launchStatus = nil }
+    }
+
     nonisolated func sizeChanged(source: LocalProcessTerminalView, newCols: Int, newRows: Int) {}
     nonisolated func setTerminalTitle(source: LocalProcessTerminalView, title: String) {}
     nonisolated func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
@@ -103,6 +146,17 @@ final class TerminalTab: NSObject, ObservableObject, Identifiable, LocalProcessT
 }
 
 final class WorkbenchTerminalView: LocalProcessTerminalView {
+    var onTmuxScreen: (() -> Void)?
+
+    override func dataReceived(slice: ArraySlice<UInt8>) {
+        super.dataReceived(slice: slice)
+        // A plain SSH error can reach the PTY before a successful tmux attachment.
+        if let callback = onTmuxScreen, terminal.isCurrentBufferAlternate {
+            onTmuxScreen = nil
+            callback()
+        }
+    }
+
     override func viewDidMoveToWindow() {
         super.viewDidMoveToWindow()
         focusKeyboard()
@@ -147,28 +201,35 @@ final class TerminalViewport: NSView {
     }
 }
 
-struct TerminalPane: View {
+struct TerminalPane<RecoveryControls: View>: View {
+    @Environment(\.workbenchLanguage) private var language
     @ObservedObject var tab: TerminalTab
-    let reconnect: () -> Void
+    @ViewBuilder let recoveryControls: () -> RecoveryControls
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(tab.title).font(.title2.weight(.semibold))
-                    Text(tab.subtitle).font(.callout.monospaced()).foregroundStyle(.secondary)
+                    HStack(spacing: 12) {
+                        Text(tab.title(in: language)).font(.title2.weight(.semibold))
+                        if !tab.ended, let status = tab.launchStatus {
+                            Label(status.text(in: language), systemImage: "terminal")
+                                .font(.callout).foregroundStyle(.secondary)
+                        }
+                    }
+                    Text(tab.subtitle(in: language)).font(.callout.monospaced()).foregroundStyle(.secondary)
                 }
                 Spacer()
-                if tab.ended && !tab.isUnlock { Button("重新连接", action: reconnect) }
             }
             if tab.isUnlock {
                 Notice(text: tab.ended
-                    ? (tab.exitCode == 0 ? "密钥已解锁，可返回概览连接服务器。" : "密钥解锁已结束，请查看终端输出。")
-                    : "在下方本地终端输入密钥口令，输入时不会显示字符。", symbol: "key.fill", color: .teal)
+                    ? (tab.exitCode == 0 ? language.text("密钥已解锁，可返回概览连接服务器。", "Key unlocked. Return to Overview to connect.")
+                       : language.text("密钥解锁已结束，请查看终端输出。", "Key unlock finished. Check the terminal output."))
+                    : language.text("在下方本地终端输入密钥口令，输入时不会显示字符。", "Enter the key passphrase in the local terminal below. Characters stay hidden as you type."), symbol: "key.fill", color: .teal)
             } else if tab.ended {
-                Notice(text: "终端连接已结束。重新连接可以接回仍在运行的会话。", symbol: "cable.connector.slash")
-            } else if tab.isManual {
-                Notice(text: "待手动激活 · " + tab.detail)
+                recoveryControls()
+            } else if let message = tab.activationNotice(in: language) {
+                Notice(text: message)
             }
             TerminalSurface(tab: tab)
                 .id(tab.id)
@@ -177,5 +238,10 @@ struct TerminalPane: View {
         }
         .padding(20)
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .task(id: tab.launchStatus) {
+            guard let status = tab.launchStatus else { return }
+            do { try await Task.sleep(for: .seconds(6)) } catch { return }
+            tab.dismissStatus(status)
+        }
     }
 }

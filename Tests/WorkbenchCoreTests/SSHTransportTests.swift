@@ -86,7 +86,9 @@ struct SSHTransportTests {
             let directory = "/work/实验 (A)/quote'&space"
             let shortcut = Shortcut(serverID: profile.id, title: "analysis", name: "work",
                                     environment: "science", directory: directory)
-            let args = try SSHTransport.arguments(profile, shortcut: shortcut, mode: "attach", pinDirectory: base)
+            let token = "237:$0:1770000000"
+            let args = try SSHTransport.arguments(profile, shortcut: shortcut, mode: "attach",
+                                                  sessionToken: token, pinDirectory: base, language: .english)
             #expect(args.contains("-tt"))
             let command = try #require(args.last)
             #expect(command.hasPrefix("exec /usr/bin/python3 -I -B -S -c '"))
@@ -96,9 +98,17 @@ struct SSHTransportTests {
             let data = try #require(Data(base64Encoded: raw))
             let body = try JSONDecoder().decode([String: String].self, from: data)
             #expect(body["mode"] == "attach")
+            #expect(body["language"] == "en")
             #expect(body["directory"] == directory)
             #expect(body["socketID"] == shortcut.socketID)
             #expect(body["sessionID"] == shortcut.sessionID)
+            #expect(body["sessionToken"] == token)
+            #expect(body["allowExisting"] == nil)
+            for mode in ["attach", "attachConfirmed", "confirm", "reconnect"] {
+                #expect(throws: TransportError.self) {
+                    try SSHTransport.arguments(profile, shortcut: shortcut, mode: mode, pinDirectory: base)
+                }
+            }
         }
     }
 
@@ -151,10 +161,11 @@ struct SSHTransportTests {
                                 environment: "plain", directory: "/home/tester/work")
         let first = try await SSHTransport.ensure(profile, shortcut)
         try #require(first.state == "ready", "\(first.detail)")
-        let pid = try shellPIDThenDetach(profile: profile, shortcut: shortcut)
-        let resumed = try await SSHTransport.ensure(profile, shortcut)
+        let pid = try shellPIDThenDetach(profile: profile, shortcut: shortcut, result: first)
+        let resumed = try await SSHTransport.reconnect(profile, shortcut, sessionToken: first.sessionToken)
         try #require(resumed.state == "ready", "\(resumed.detail)")
-        let resumedPID = try shellPIDThenDetach(profile: profile, shortcut: shortcut)
+        #expect(resumed.origin == .resumed)
+        let resumedPID = try shellPIDThenDetach(profile: profile, shortcut: shortcut, result: resumed)
         #expect(resumedPID == pid)
     }
 
@@ -200,7 +211,7 @@ struct SSHTransportTests {
         return Set(String(decoding: bytes, as: UTF8.self).split(whereSeparator: \.isNewline).compactMap { Int32($0) })
     }
 
-    private func shellPIDThenDetach(profile: ServerProfile, shortcut: Shortcut) throws -> String {
+    private func shellPIDThenDetach(profile: ServerProfile, shortcut: Shortcut, result: LaunchResult) throws -> String {
         var master: Int32 = -1, slave: Int32 = -1
         var size = winsize(ws_row: 28, ws_col: 180, ws_xpixel: 0, ws_ypixel: 0)
         guard openpty(&master, &slave, nil, nil, &size) == 0 else { throw POSIXError(.ENXIO) }
@@ -208,7 +219,7 @@ struct SSHTransportTests {
         let childTTY = FileHandle(fileDescriptor: slave, closeOnDealloc: true)
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/ssh")
-        process.arguments = try SSHTransport.attachArguments(profile, shortcut)
+        process.arguments = try SSHTransport.attachArguments(profile, shortcut, result: result)
         process.standardInput = childTTY
         process.standardOutput = childTTY
         process.standardError = childTTY

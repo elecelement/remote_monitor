@@ -70,4 +70,18 @@ struct LibraryTests {
         #expect(throws: (any Error).self) { try store.save(server) }
         #expect(try Data(contentsOf: file) == bytes)
     }
+
+    @Test func legacySameNameApprovalIsDiscardedWhileShortcutIdentityIsPreserved() throws {
+        let shortcut = Shortcut(serverID: server.id, title: "分析", name: "analysis",
+                                environment: "science", directory: "/work")
+        let encoded = try JSONEncoder().encode(shortcut)
+        var legacy = try #require(JSONSerialization.jsonObject(with: encoded) as? [String: Any])
+        legacy["allowExisting"] = true
+        legacy["syncSource"] = "/local/project"
+        let restored = try JSONDecoder().decode(Shortcut.self, from: JSONSerialization.data(withJSONObject: legacy))
+        #expect(restored.sessionID == shortcut.sessionID)
+        #expect(restored.syncSource == "/local/project")
+        let migrated = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(restored)) as? [String: Any])
+        #expect(migrated["allowExisting"] == nil)
+    }
 }

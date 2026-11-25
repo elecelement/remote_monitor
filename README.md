@@ -1,45 +1,60 @@
-# Remote Monitor · GPU 工作台
+<img src="Packaging/AppIcon.png" width="64" height="64" alt="">
 
-通过 SSH 查看 Linux 服务器的 NVIDIA GPU 状态，并在 macOS 的内置终端中创建或接回 tmux 工作会话。
+# Remote Monitor
 
-- **GPU 概览** · 每张卡分别显示利用率与显存占用。应用在前台通过一条 SSH 连接约每 5 秒采样，断线后保留最近一次读数及采样时间。
-- **工作快捷方式** · 保存 tmux 会话名、Conda 环境和工作目录，支持一次打开多个快捷方式。新会话默认是上二下一的三个窗格。
-- **终端标签** · 可在 GPU 概览和终端之间切换，按 `⌘1` 返回概览。退出应用会断开本地 SSH 连接，远端 tmux 会话与运行中的任务可以继续运行。
+English · [简体中文](README.zh-CN.md)
 
-## 构建
+Remote Monitor is a macOS app for checking NVIDIA GPU usage on a Linux server and opening a ready-to-use tmux workspace over SSH. A saved shortcut combines a session name, a Conda environment, and a working directory.
 
-Mac 需要 macOS 14 或以上、命令行开发工具，以及 Swift 6.1 或兼容工具链。首次构建会下载 `Package.resolved` 锁定的依赖。
+## Build and open
+
+On a Mac with macOS 14 or later, install the Command Line Tools and Swift 6.1 or a compatible toolchain. Run these commands from the repository root. The first build downloads the dependencies pinned in `Package.resolved`.
 
 ```sh
 bash Packaging/build-app.sh
 open "dist/GPU 工作台.app"
 ```
 
-构建脚本生成适用于当前 Mac 架构的应用，并完成本地签名。项目通过 Swift Package Manager 使用 [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm) 实现终端界面。
+The script builds for the current Mac and signs the app locally. At the bottom of the sidebar, select **English** or **简体中文** under the globe icon. You can switch before adding your first server or while a terminal is open. The app starts in Chinese and remembers your choice on this Mac. System-provided controls use the macOS language. Terminal output uses the remote program’s language.
 
-## 连接服务器
+## Connect a server
 
-远端需要支持 SSH 公钥登录，并提供 `/usr/bin/python3`（3.8 或以上）、Bash 和 tmux 3.2 或以上。自动初始化环境需要 Conda，GPU 概览需要可用的 `nvidia-smi`。如果服务器依赖 VPN，先在 Mac 上接入对应网络。
+1. Choose **Add Server**. Enter a display name, host, and SSH username, then select your private key on the Mac. Leave the port blank for standard SSH. Custom ports and the optional Conda installation path are under the extra connection options.
+2. Fetch the SSH host fingerprint. Compare it with a trusted record or the value provided by the server administrator before saving. For a passphrase-protected key, use **Unlock Key** to load it into the local SSH agent.
+3. Open the overview to see utilization, used and total memory, and free memory for each GPU. The foreground app samples about every five seconds. If monitoring is interrupted, the overview keeps the last reading and its timestamp.
 
-1. 在「添加服务器」中填写主机与用户名，选择 Mac 上的 SSH 私钥文件。普通 SSH 保持默认端口即可。
-2. 获取主机指纹，从管理员或已有可信记录核对 SHA-256 指纹后保存。带口令的私钥可以通过「解锁密钥」交给系统 SSH 代理。
-3. 在「快捷方式」中新建一项，填写会话名、Conda 环境名和服务器上已存在的工作目录。例如 `research`、`ml` 和 `/work/example-project`。
-4. 点击「打开」。应用会在三个新窗格中进入指定目录并准备 Conda 环境。每个窗格都会停在终端提示符，供你继续操作。
+The server needs SSH public-key authentication, `/usr/bin/python3` (3.8 or later), Bash, and tmux 3.2 or later. GPU monitoring uses `nvidia-smi`, automatic environment setup uses an existing Conda installation, and code sync uses rsync. If the server is behind a VPN, connect the Mac to that network first.
 
-Conda 默认从常见安装位置查找，也可在「连接设置」填写安装根目录或 `bin/conda` 的绝对路径。如果遇到附加激活脚本、无法核对环境或自定义激活配置，应用会提示手动激活。
+## Open a workspace
 
-## 共享服务器与本机配置
+In **Shortcuts**, create an entry with a tmux session name (for example, `research`), a Conda environment (`ml`), and an existing absolute directory on the server (`/work/example-project`). The display name defaults to the session name.
 
-- 使用系统 OpenSSH，并固定经用户确认的主机指纹。指纹变化时停止连接。服务器资料、快捷方式和可信指纹保存在 Mac 的 `~/Library/Application Support/GPUWorkbench/`，私钥保留在原位置。
-- 启动逻辑随 SSH 请求执行。服务器保留正常的 SSH 日志和 tmux 运行状态，包括默认 socket 与会话本身。应用无需在远端安装代理或写入启动脚本。
-- 创建新会话时，工作目录与 Conda 变量只应用到各窗格新建的 Bash 进程。接回已有会话时保留当前布局与任务。对于手动创建的同名会话，确认它属于自己后，再打开快捷方式里的「接回我已有的同名 tmux 会话」。
-- 自动操作限于 GPU 查询、会话检查、创建与接回。内置终端中的手动命令使用当前 Linux 账号的权限。服务器自己的登录和审计机制照常运行。
+- **Open Workspace** creates the session if needed, with two panes on top and one full-width pane below. Each new Bash shell starts in the chosen directory and prepares the selected environment. If an environment uses custom activation hooks or its setup cannot be verified, the app gives instructions for manual activation.
+- Opening a shortcut again resumes its existing session with its current panes and jobs. A same-name conflict offers a different name or a one-time choice to attach after verifying the session is yours. A shared login means that a name alone cannot identify the person running a session.
+- **Reconnect** checks the identity of the session that was disconnected. If the original session is gone, the tab keeps its output and offers to create a new session of the same name.
+- Select multiple shortcuts to open several tabs. Press `⌘1` to return to the overview. Closing a terminal tab disconnects its local SSH client. Quitting the app closes the remaining connections. Remote tmux jobs can continue running.
 
-## 运行测试
+## Preview and sync code
+
+1. Choose **Sync Code** beside a shortcut and select the local project folder. Its destination is the shortcut’s existing remote working directory.
+2. Choose **Preview** for an rsync dry run. The list shows files that would overwrite a remote copy first, followed by new files. Only regular `.py` and `.sh` files are eligible. The filters skip workbench source trees, app bundles, build output, and common private or manuscript directories.
+3. Continue to see the target server and directory and the number of new files and overwrites. Return to the list to reconsider, or confirm the upload. The app checks the list again before transferring the reviewed paths. If the list has changed, run a new preview.
+
+Preview writes no project files on the server. A confirmed upload writes the listed source files and keeps remote-only files. The upload manifest is temporary and stays on the Mac. After a successful sync, the review window keeps the list available for inspection.
+
+## Shared servers and local data
+
+The app uses the system OpenSSH client and pins the verified host key. A changed key blocks the connection. Profiles, shortcuts, and pinned host keys are stored in `~/Library/Application Support/GPUWorkbench/`. Private keys stay in their original locations.
+
+GPU queries and session management send fixed operations over SSH. The app installs no remote agent or startup script. Conda and working-directory changes apply to the newly created pane processes. Normal SSH audit logs and tmux runtime state, including its socket, can remain on the server. Commands you type in the terminal run with the permissions of your Linux account.
+
+## Tests
 
 ```sh
 swift test --disable-xctest
 python3 -B -m unittest discover -s Tests/Remote -v
 ```
 
-Python 测试默认从 `PATH` 查找 tmux，也可用 `GWB_TEST_TMUX` 指定绝对路径。设置 `GWB_TEST_CONDA` 后可运行实际 Conda 的激活测试。测试使用临时会话和通用夹具。
+The Python suite uses disposable local sessions. It finds tmux on `PATH`, or you can set `GWB_TEST_TMUX` to the executable. Set `GWB_TEST_CONDA` to a Conda executable to include the real activation test.
+
+The embedded terminal uses [SwiftTerm](https://github.com/migueldeicaza/SwiftTerm).
